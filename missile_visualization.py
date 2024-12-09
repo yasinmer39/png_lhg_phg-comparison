@@ -2,13 +2,9 @@ import cv2
 import numpy as np
 import matplotlib.pyplot as plt
 from collections import deque
-
-def PID(error, coef_int, prev, kp, ki ,kd):
-    coef_int += error  # Integral term
-    out = error * kp + coef_int * ki + (error - prev) * kd  # PID output
-    prev = error  # Update previous error
-
-    return out, coef_int, prev  # Return updated integral and previous values
+from matplotlib import colors
+import time
+import math
 
 def state_space_model(x, u):
     """
@@ -26,40 +22,7 @@ def state_space_model(x, u):
     dx[3] = u1
     return dx
 
-def calculate_los_angle(pursuer, target):
-    """
-    Calculate the Line of Sight angle between pursuer and target
-    Returns angle in degrees (0-360) measured clockwise from true north
-    """
-    delta_x = target["iha_enlem"] - pursuer["iha_enlem"]
-    delta_y = target["iha_boylam"] - pursuer["iha_boylam"]
-    
-    # Calculate LOS angle in radians and convert to degrees
-    los_angle = np.rad2deg(np.arctan2(delta_y, delta_x))
-    
-    # Convert to 0-360 range
-    los_angle = los_angle % 360
-    
-    return los_angle
-
-def follow_target(pursuer, target, controller, gain=1.0):
-    """
-    Adjust the pursuer's heading to follow the target using LOS guidance.
-    gain: Proportional gain for adjusting the heading.
-    """
-    los_angle = calculate_los_angle(pursuer, target)
-    current_heading = pursuer["iha_yonelme"]
-    
-    # Calculate heading difference
-    heading_diff = (los_angle - current_heading) % 360
-    if heading_diff > 180:
-        heading_diff -= 360
-    
-    # Adjust roll to reduce heading difference
-    controller.set_roll(current_heading + gain * heading_diff)
-
 class KalmanFilter:
-
 
     def __init__(self, initial_x, initial_y, initial_vx, initial_vy):
 
@@ -79,46 +42,6 @@ class KalmanFilter:
         predicted = self.kf.predict()
         x, y = float(predicted[0]), float(predicted[1])
         return x, y
-    
-class MissileController:
-    def __init__(self):
-        self.max_roll_rate = 20  # Maximum degrees per update
-        self.base_speed = 0.1    # Base speed units per update
-        self.max_speed = 0.3     # Maximum speed units per update
-        
-        # Current state
-        self.current_speed = 0.0
-        self.target_roll = 0.0
-        self.target_thrust = 0.0
-        
-    def set_roll(self, angle):
-        """Set desired roll angle in degrees"""
-        self.target_roll = angle % 360
-        
-    def set_thrust(self, thrust):
-        """Set desired thrust (0.0 to 1.0)"""
-        self.target_thrust = max(0.0, min(1.0, thrust))
-        
-    def update(self, payload):
-        # Update heading based on roll command
-        current_heading = payload["iha_yonelme"]
-        heading_diff = (self.target_roll - current_heading) % 360
-        if heading_diff > 180:
-            heading_diff -= 360
-            
-        # Apply maximum roll rate limit
-        roll_change = max(-self.max_roll_rate, min(self.max_roll_rate, heading_diff))
-        payload["iha_yonelme"] = (current_heading + roll_change) % 360
-        
-        # Update speed based on thrust command
-        self.current_speed = self.base_speed + (self.max_speed - self.base_speed) * self.target_thrust
-        
-        # Calculate movement based on current heading and speed
-        rad = np.deg2rad(payload["iha_yonelme"])
-        payload["iha_enlem"] += self.current_speed * np.cos(rad)
-        payload["iha_boylam"] += self.current_speed * np.sin(rad)
-        
-        return payload
 
 def plot_arrow(pos, color="red"):
     rad = np.deg2rad(pos["iha_yonelme"])
@@ -256,34 +179,95 @@ trim = 0
 angle1 = 0
 angle2 = 180  # Start opposite to payload1
 
+class MissileController:
+    def __init__(self):
+        self.max_roll_rate = 20  # Maximum degrees per update
+        self.base_speed = 0.1    # Base speed units per update
+        self.max_speed = 0.3     # Maximum speed units per update
+        
+        # Current state
+        self.current_speed = 0.0
+        self.target_roll = 0.0
+        self.target_thrust = 0.0
+        
+    def set_roll(self, angle):
+        """Set desired roll angle in degrees"""
+        self.target_roll = angle % 360
+        
+    def set_thrust(self, thrust):
+        """Set desired thrust (0.0 to 1.0)"""
+        self.target_thrust = max(0.0, min(1.0, thrust))
+        
+    def update(self, payload):
+        # Update heading based on roll command
+        current_heading = payload["iha_yonelme"]
+        heading_diff = (self.target_roll - current_heading) % 360
+        if heading_diff > 180:
+            heading_diff -= 360
+            
+        # Apply maximum roll rate limit
+        roll_change = max(-self.max_roll_rate, min(self.max_roll_rate, heading_diff))
+        payload["iha_yonelme"] = (current_heading + roll_change) % 360
+        
+        # Update speed based on thrust command
+        self.current_speed = self.base_speed + (self.max_speed - self.base_speed) * self.target_thrust
+        
+        # Calculate movement based on current heading and speed
+        rad = np.deg2rad(payload["iha_yonelme"])
+        payload["iha_enlem"] += self.current_speed * np.cos(rad)
+        payload["iha_boylam"] += self.current_speed * np.sin(rad)
+        
+        return payload
+
 controller1 = MissileController()
 controller2 = MissileController()
 
-# Adjusted PID controller parameters
-kp = 0.5  # Increase proportional gain for faster response
-ki = 0.02  # Increase integral gain to reduce steady-state error
-kd = 0.1  # Increase derivative gain to dampen oscillations
+def calculate_los_angle(pursuer, target):
+    """
+    Calculate the Line of Sight angle between pursuer and target
+    Returns angle in degrees (0-360) measured clockwise from true north
+    """
+    delta_x = target["iha_enlem"] - pursuer["iha_enlem"]
+    delta_y = target["iha_boylam"] - pursuer["iha_boylam"]
+    
+    # Calculate LOS angle in radians and convert to degrees
+    los_angle = np.rad2deg(np.arctan2(delta_y, delta_x))
+    
+    # Convert to 0-360 range
+    los_angle = los_angle % 360
+    
+    return los_angle
 
-# Initialize integral and previous error for PID
-integral = 0.0
-previous_error = 0.0
-
-for i in range(1000):
-    los_angle = calculate_los_angle(payload1, payload2)
-    current_heading = payload1["iha_yonelme"]
+# Add this function to adjust heading based on LOS
+def follow_target(pursuer, target, controller, gain=1.0):
+    """
+    Adjust the pursuer's heading to follow the target using LOS guidance.
+    gain: Proportional gain for adjusting the heading.
+    """
+    los_angle = calculate_los_angle(pursuer, target)
+    current_heading = pursuer["iha_yonelme"]
     
     # Calculate heading difference
     heading_diff = (los_angle - current_heading) % 360
     if heading_diff > 180:
         heading_diff -= 360
     
-    # Use PID controller to calculate turning rate
-    turning_rate, integral, previous_error = PID(heading_diff, integral, previous_error, kp, ki, kd)
+    # Adjust roll to reduce heading difference
+    controller.set_roll(current_heading + gain * heading_diff)
+
+for i in range(1000):
+    los_angle = calculate_los_angle(payload1, payload2)
+    current_heading = payload1["iha_yonelme"]
     
-    # Control inputs for payload1
-    u1 = np.array([0.5,  # Constant acceleration
-                   np.deg2rad(turning_rate)])  # Turning rate from PID
+    heading_diff = (los_angle - current_heading) % 360
+    if heading_diff > 180:
+        heading_diff -= 360
     
+
+    u1 = np.array([0.5, np.deg2rad(heading_diff) * 0.5])
+    
+
+
     # Control inputs for payload2 (target) - example circular motion
     u2 = np.array([0.2,  # Constant acceleration
                    0.2])  # Constant turning rate
